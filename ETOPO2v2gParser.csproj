@@ -8,10 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Folder Include="Data\" />
-  </ItemGroup>
-
-  <ItemGroup>
     <None Update="Data\ETOPO2v2g_f4_LSB.flt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

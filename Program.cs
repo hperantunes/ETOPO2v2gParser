@@ -2,9 +2,11 @@
 
 namespace ETOPO2v2gParser;
 
-public class Program
+public static class Program
 {
-    public static void Main(string[] args)
+    private static readonly char[] separator = [' ', '\t'];
+
+    static void Main()
     {
         // 1) Paths to your .hdr and .flt files
         //    Adjust these as needed. For example, if you unzipped them into "Data" folder:
@@ -31,15 +33,16 @@ public class Program
         Console.WriteLine("Loaded the .flt data into a float[,] array.\n");
 
         // 4) Demonstration:
-        //    a) Query by lat/lon
-        double testLat = 40.0;
-        double testLon = -75.0;
-        var (r, c) = LatLonToRowCol(testLat, testLon, header);
+        //    a) Test a known lat/lon => e.g. (40N, 75W)
+        double testLat = 40.0;  // +40
+        double testLon = -75.0; // -75
 
-        float elev = elevations[r, c];
+        var (row, col) = LatLonToRowCol(testLat, testLon, header);
+
+        float elev = elevations[row, col];
         float elevNorm = Normalize(elev, (float)header.MinValue, (float)header.MaxValue);
 
-        Console.WriteLine($"Lookup at lat={testLat:F2}, lon={testLon:F2} => row={r}, col={c}, elevation={elev} m, normalized={elevNorm:F3}");
+        Console.WriteLine($"A: Lookup at lat={testLat:F2}, lon={testLon:F2} => row={row}, col={col}, elevation={elev} m, normalized={elevNorm:F3}");
 
         //    b) Example centroid (x, y, z)
         //       Convert to lat/lon, then look up
@@ -50,32 +53,25 @@ public class Program
         float elev2 = elevations[r2, c2];
         float elev2Norm = Normalize(elev2, (float)header.MinValue, (float)header.MaxValue);
 
-        Console.WriteLine($"Centroid {centroid} => lat={latDeg:F2}, lon={lonDeg:F2}, row={r2}, col={c2}, elev={elev2} m, norm={elev2Norm:F3}");
+        Console.WriteLine($"B: Centroid {centroid} => lat={latDeg:F2}, lon={lonDeg:F2}, row={r2}, col={c2}, elev={elev2} m, norm={elev2Norm:F3}");
 
         Console.WriteLine("\nDone!");
     }
 
     /// <summary>
-    /// Parses the ESRI-style header file (.hdr).
-    /// Example lines:
-    ///   NCOLS 10801
-    ///   NROWS 5401
-    ///   XLLCENTER -180.00000
-    ///   YLLCENTER -90.00000
-    ///   CELLSIZE 0.03333333333
-    ///   NODATA_VALUE 999999
-    ///   BYTEORDER LSBFIRST
-    ///   NUMBERTYPE 4_BYTE_FLOAT
-    ///   MIN_VALUE -10722.0
-    ///   MAX_VALUE 8046.0
+    /// Parses a simple ESRI .hdr file. Example keys:
+    ///   NCOLS, NROWS, XLLCENTER, YLLCENTER, CELLSIZE, NODATA_VALUE, BYTEORDER, etc.
     /// </summary>
-    private static EsriHeader ParseHdrFile(string hdrPath)
+    private static EsriHeader ParseHdrFile(string path)
     {
         var hdr = new EsriHeader();
-        foreach (var line in File.ReadLines(hdrPath))
+        foreach (var line in File.ReadLines(path))
         {
-            var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2) continue;
+            var parts = line.Split(separator, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2)
+            {
+                continue;
+            }
 
             string key = parts[0].ToUpperInvariant();
             string val = parts[1];
@@ -114,40 +110,31 @@ public class Program
                     break;
             }
         }
-
         return hdr;
     }
 
     /// <summary>
-    /// Reads the little-endian 4-byte float data (.flt) into a 2D float array.
-    /// According to the header, row=0 should correspond to YLLCENTER in lat,
-    /// and col=0 should correspond to XLLCENTER in lon.
-    /// Dimensions: [NROWS, NCOLS]
+    /// Reads the float data in forward order. The first row read is "row=0" in the array.
+    /// This means row=0 is actually +90°N if the file is top-down.
     /// </summary>
     private static float[,] ReadFltFile(string fltPath, EsriHeader hdr)
     {
         float[,] data = new float[hdr.NRows, hdr.NCols];
-
-        long expectedSize = (long)hdr.NRows * hdr.NCols * sizeof(float);
-        long actualSize = new FileInfo(fltPath).Length;
-        if (actualSize != expectedSize)
+        long expectedBytes = (long)hdr.NRows * hdr.NCols * sizeof(float);
+        long actualBytes = new FileInfo(fltPath).Length;
+        if (actualBytes != expectedBytes)
         {
-            throw new IOException($"File size mismatch: expected {expectedSize} bytes, got {actualSize}");
+            throw new IOException($"Expected {expectedBytes} bytes but got {actualBytes}.");
         }
 
         using var fs = new FileStream(fltPath, FileMode.Open, FileAccess.Read);
         using var br = new BinaryReader(fs);
 
-        // Row 0 in the file corresponds to the bottom row (YLLCENTER).
-        // We'll store it exactly that way: data[0,*] = bottom row in lat.
-        // If you want row=0 to be top latitude, invert your indexing logic here.
         for (int row = 0; row < hdr.NRows; row++)
         {
             for (int col = 0; col < hdr.NCols; col++)
             {
-                // Because it's LSBFIRST (little-endian), we can just ReadSingle().
-                float val = br.ReadSingle();
-                data[row, col] = val;
+                data[row, col] = br.ReadSingle(); // Already LSB => no swap needed
             }
         }
 
@@ -155,19 +142,23 @@ public class Program
     }
 
     /// <summary>
-    /// Converts (lat, lon) in degrees -> the nearest row/col in the float array.
-    /// row 0 => YLLCENTER, col 0 => XLLCENTER.
-    /// cellsize => 0.0333333 degrees (2 arc-min).
+    /// We read row=0 as the very first row in the file, which is actually +90°N (the top).
+    /// So lat=+90 => row=0; lat=-90 => row=NRows-1.
+    /// => row = (90 - lat) / CellSize
     /// </summary>
     private static (int row, int col) LatLonToRowCol(double lat, double lon, EsriHeader hdr)
     {
-        // Since row=0 is yllcenter, row grows as we go north:
-        double rowD = (lat - hdr.YllCenter) / hdr.CellSize;
-        double colD = (lon - hdr.XllCenter) / hdr.CellSize;
+        // row formula for top-down data:
+        //   row=0 => +90°, row=NRows-1 => -90°
+        double rowDouble = (90.0 - lat) / hdr.CellSize;
 
-        int row = (int)Math.Round(rowD);
-        int col = (int)Math.Round(colD);
+        // col formula usually unchanged if col=0 => -180°, col=NCols-1 => +180° 
+        double colDouble = (lon - hdr.XllCenter) / hdr.CellSize;
 
+        int row = (int)Math.Round(rowDouble);
+        int col = (int)Math.Round(colDouble);
+
+        // clamp to valid array range
         row = Math.Clamp(row, 0, hdr.NRows - 1);
         col = Math.Clamp(col, 0, hdr.NCols - 1);
 
@@ -181,8 +172,10 @@ public class Program
     private static (double latDeg, double lonDeg) CartesianToLatLon(double x, double y, double z)
     {
         double r = Math.Sqrt(x * x + y * y + z * z);
-        if (r < 1e-9) return (0, 0);
-
+        if (r < 1e-9)
+        {
+            return (0, 0);
+        }
         double lat = Math.Asin(z / r) * (180.0 / Math.PI);
         double lon = Math.Atan2(y, x) * (180.0 / Math.PI);
         return (lat, lon);
@@ -194,26 +187,12 @@ public class Program
     /// </summary>
     private static float Normalize(float elevation, float minVal, float maxVal)
     {
-        if (Math.Abs(maxVal - minVal) < 1e-6f) return 0;
+        if (Math.Abs(maxVal - minVal) < 1e-6f)
+        {
+            return 0;
+        }
         float ratio = (elevation - minVal) / (maxVal - minVal); // 0..1
         float norm = (ratio * 2.0f) - 1.0f;                      // -1..+1
         return norm;
     }
-}
-
-/// <summary>
-/// A small class to store ESRI .hdr info
-/// </summary>
-public class EsriHeader
-{
-    public int NCols { get; set; }
-    public int NRows { get; set; }
-    public double XllCenter { get; set; }
-    public double YllCenter { get; set; }
-    public double CellSize { get; set; }
-    public double NoDataValue { get; set; }
-    public string ByteOrder { get; set; } = "";
-    public string NumberType { get; set; } = "";
-    public double MinValue { get; set; }
-    public double MaxValue { get; set; }
 }
