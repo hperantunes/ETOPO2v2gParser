@@ -1,0 +1,5 @@
+.vs/
+bin/
+obj/
+Data/ETOPO2v2g_f4_LSB.flt
+Data/ETOPO2v2g_f4_LSB.hdr
