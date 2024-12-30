@@ -166,8 +166,9 @@ public static class Program
     }
 
     /// <summary>
-    /// Converts a 3D cartesian point (x,y,z) on a sphere to (lat, lon) in degrees.
-    /// Assumes z is "up" and radius is sqrt(x^2 + y^2 + z^2).
+    /// Converts a 3D cartesian point (x, y, z) on a sphere to (lat, lon) in degrees,
+    /// assuming y is the "up" (north pole) axis, and radius = sqrt(x^2 + y^2 + z^2).
+    /// Also flips longitude to fix the mirrored globe.
     /// </summary>
     private static (double latDeg, double lonDeg) CartesianToLatLon(double x, double y, double z)
     {
@@ -176,8 +177,18 @@ public static class Program
         {
             return (0, 0);
         }
-        double lat = Math.Asin(z / r) * (180.0 / Math.PI);
-        double lon = Math.Atan2(y, x) * (180.0 / Math.PI);
+
+        // y is "north pole"
+        double lat = Math.Asin(y / r) * (180.0 / Math.PI);
+
+        // Normally: lon = Math.Atan2(z, x), but that can produce a mirrored view
+        // if your orientation expects the positive z-axis to be "east" or "west" in the opposite sense.
+        // To fix the mirror, just negate the angle:
+        double lon = -Math.Atan2(z, x) * (180.0 / Math.PI);
+
+        // Optionally, you can also wrap lon to [-180..180] or [0..360] if desired
+        // e.g., if (lon < -180) lon += 360; if (lon > 180) lon -= 360;
+
         return (lat, lon);
     }
 
@@ -194,5 +205,19 @@ public static class Program
         float ratio = (elevation - minVal) / (maxVal - minVal); // 0..1
         float norm = (ratio * 2.0f) - 1.0f;                      // -1..+1
         return norm;
+    }
+
+    private class EsriHeader
+    {
+        public int NCols { get; set; }
+        public int NRows { get; set; }
+        public double XllCenter { get; set; }
+        public double YllCenter { get; set; }
+        public double CellSize { get; set; }
+        public double NoDataValue { get; set; }
+        public string ByteOrder { get; set; } = "";
+        public string NumberType { get; set; } = "";
+        public double MinValue { get; set; }
+        public double MaxValue { get; set; }
     }
 }
