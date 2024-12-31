@@ -6,7 +6,7 @@ public static class Program
 {
     private static readonly char[] separator = [' ', '\t'];
 
-    static void Main()
+    public static void Main()
     {
         // 1) Paths to your .hdr and .flt files
         //    Adjust these as needed. For example, if you unzipped them into "Data" folder:
